@@ -1,18 +1,10 @@
 name: Build Arch Package
 
 on:
-  push:
-    branches:
-      - master
-  schedule:
-    - cron: '17 */6 * * *'
   workflow_dispatch:
-  repository_dispatch:
-    types:
-      - upstream-flameshot-updated
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -45,7 +37,9 @@ jobs:
         run: |
           set -euo pipefail
           sha="$(git ls-remote https://github.com/JSJ-Experiments/flameshot.git refs/heads/master | cut -f1)"
+          short_sha="${sha:0:12}"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$sha" > upstream-commit.txt
 
       - name: Create build user
@@ -64,26 +58,49 @@ jobs:
             makepkg --syncdeps --noconfirm --cleanbuild --clean
           '
 
-      - name: Write checksums
+      - name: Collect build outputs
+        id: package
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist"
           shopt -s nullglob
           packages=( "$GITHUB_WORKSPACE"/*.pkg.tar.* )
           if (( ${#packages[@]} == 0 )); then
             echo "No package artifact was produced" >&2
             exit 1
           fi
+          primary_package="$(basename "${packages[0]}")"
+          echo "package_name=$primary_package" >> "$GITHUB_OUTPUT"
           for pkg in "${packages[@]}"; do
-            sha256sum "$pkg" > "$pkg.sha256"
+            base="$(basename "$pkg")"
+            cp "$pkg" "$GITHUB_WORKSPACE/dist/$base"
+            sha256sum "$pkg" > "$GITHUB_WORKSPACE/dist/$base.sha256"
           done
+          cp "$GITHUB_WORKSPACE/upstream-commit.txt" "$GITHUB_WORKSPACE/dist/"
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: flameshot-git-${{ steps.upstream.outputs.sha }}
+          name: ${{ steps.package.outputs.package_name }}
           path: |
-            ${{ github.workspace }}/*.pkg.tar.*
-            ${{ github.workspace }}/*.pkg.tar.*.sha256
-            ${{ github.workspace }}/upstream-commit.txt
+            ${{ github.workspace }}/dist/*
           if-no-files-found: error
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: upstream-${{ steps.upstream.outputs.short_sha }}
+          name: Flameshot upstream ${{ steps.upstream.outputs.short_sha }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: false
+          prerelease: true
+          body: |
+            Arch Linux package build for:
+            https://github.com/JSJ-Experiments/flameshot
+
+            Upstream commit: `${{ steps.upstream.outputs.sha }}`
+          files: |
+            ${{ github.workspace }}/dist/*
+          fail_on_unmatched_files: true
+          overwrite_files: true
