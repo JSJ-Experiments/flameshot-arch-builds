@@ -1,0 +1,89 @@
+name: Build Arch Package
+
+on:
+  push:
+    branches:
+      - master
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types:
+      - upstream-flameshot-updated
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install toolchain
+        run: |
+          pacman -Syu --noconfirm archlinux-keyring
+          pacman -S --noconfirm --needed \
+            base-devel \
+            cmake \
+            git \
+            kguiaddons \
+            hicolor-icon-theme \
+            ninja \
+            qt6-base \
+            qt6-svg \
+            qt6-tools \
+            sudo
+
+      - name: Check out packaging repo
+        uses: actions/checkout@v4
+
+      - name: Resolve upstream head
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote https://github.com/JSJ-Experiments/flameshot.git refs/heads/master | cut -f1)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$sha" > upstream-commit.txt
+
+      - name: Create build user
+        run: |
+          useradd --create-home --shell /bin/bash builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          printf 'builder ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/builder
+
+      - name: Build package
+        shell: bash
+        run: |
+          set -euo pipefail
+          runuser -u builder -- bash -lc '
+            set -euo pipefail
+            cd "$GITHUB_WORKSPACE"
+            makepkg --syncdeps --noconfirm --cleanbuild --clean
+          '
+
+      - name: Write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=( "$GITHUB_WORKSPACE"/*.pkg.tar.* )
+          if (( ${#packages[@]} == 0 )); then
+            echo "No package artifact was produced" >&2
+            exit 1
+          fi
+          for pkg in "${packages[@]}"; do
+            sha256sum "$pkg" > "$pkg.sha256"
+          done
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: flameshot-git-${{ steps.upstream.outputs.sha }}
+          path: |
+            ${{ github.workspace }}/*.pkg.tar.*
+            ${{ github.workspace }}/*.pkg.tar.*.sha256
+            ${{ github.workspace }}/upstream-commit.txt
+          if-no-files-found: error

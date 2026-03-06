@@ -1,0 +1,5 @@
+*.pkg.tar.*
+*.pkg.tar.*.sha256
+src/
+pkg/
+upstream-commit.txt
